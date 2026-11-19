@@ -16,13 +16,15 @@ STATE_DIR=".crux"
 HUB_DIR="${CRUX_HOME:-${HOME}/.crux-hub}"
 BIN_DIR="${CRUX_BIN:-${HOME}/.local/bin}"
 INSTALL_MODE=""
+LOCAL_ONLY="false"
 
 usage() {
-    echo "Usage: bash install.sh [--manual|--auto] [--name NAME]"
+    echo "Usage: bash install.sh [--local] [--manual|--auto] [--name NAME]"
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --local)  LOCAL_ONLY="true" ;;
         --auto)   INSTALL_MODE="auto" ;;
         --manual) INSTALL_MODE="manual" ;;
         --name)   shift; CLI_NAME="${1:-crux}" ;;
@@ -124,16 +126,18 @@ sync_global_soul() {
     fi
 }
 
-for gf in \
-    "${HOME}/.zcode/AGENTS.md" \
-    "${HOME}/.qoder/AGENTS.md" \
-    "${HOME}/.claude/CLAUDE.md" \
-    "${HOME}/.gemini/GEMINI.md" \
-    "${HOME}/.config/opencode/AGENTS.md" \
-    "${HOME}/.codex/AGENTS.md"
-do
-    sync_global_soul "$gf"
-done
+if [ "${LOCAL_ONLY}" = "false" ]; then
+    for gf in \
+        "${HOME}/.zcode/AGENTS.md" \
+        "${HOME}/.qoder/AGENTS.md" \
+        "${HOME}/.claude/CLAUDE.md" \
+        "${HOME}/.gemini/GEMINI.md" \
+        "${HOME}/.config/opencode/AGENTS.md" \
+        "${HOME}/.codex/AGENTS.md"
+    do
+        sync_global_soul "$gf"
+    done
+fi
 
 # ------------------------------------------------------------------------------
 # 3. Concurrency-Safe Hook Engine (`~/.crux-hub/hooks/on_event.sh`)
@@ -452,7 +456,11 @@ EOF_T
                 .crux/hooks/*|.crux/local/*|.crux/.exempt|.crux/WORKSPACE)
                     block "CONTRACT BLOCK [$NAME]: '$rel' is internal state and never writable by agents." ;;
                 .crux/PLAN.md|.crux/AGENTS.md)
-                    block "CONTRACT BLOCK [$NAME]: '$rel' is READ-ONLY to agents (edit it directly in your human editor or run '$NAME plan'). Log blockers to .crux/PROPOSALS.md." ;;
+                    if [ "$rel" = ".crux/PLAN.md" ] && grep -q 'crux:template' "$ROOT/$SDIR/PLAN.md" 2>/dev/null; then
+                        : # Starter template: allow first-time onboarding write, then auto-locks once marker is replaced
+                    else
+                        block "CONTRACT BLOCK [$NAME]: '$rel' is READ-ONLY to agents (edit it directly in your human editor or run '$NAME plan'). Log blockers to .crux/PROPOSALS.md."
+                    fi ;;
             esac
         done <<EOF_W
 $PATHS
@@ -460,7 +468,11 @@ EOF_W
     fi
     if [ -n "$CMD" ]; then
         bash_mutates "$CMD" "$HARD_RE" && block "CONTRACT BLOCK [$NAME]: command modifies protected .crux internal files."
-        bash_mutates "$CMD" "$SOFT_RE" && block "CONTRACT BLOCK [$NAME]: .crux/PLAN.md is READ-ONLY to agents. Log blockers in .crux/PROPOSALS.md."
+        if bash_mutates "$CMD" "$SOFT_RE"; then
+            if ! grep -q 'crux:template' "$ROOT/$SDIR/PLAN.md" 2>/dev/null; then
+                block "CONTRACT BLOCK [$NAME]: .crux/PLAN.md is READ-ONLY to agents. Log blockers in .crux/PROPOSALS.md."
+            fi
+        fi
     fi
 
     # 5x Identical Tool-Call Anti-Loop Breaker
@@ -698,6 +710,7 @@ case "$CMD" in
 
         if [ ! -f "$SDIR/PLAN.md" ]; then
             cat <<'P_EOF' > "$SDIR/PLAN.md"
+<!-- crux:template (auto-locks once replaced with your real plan) -->
 # Active Engineering Plan (.crux/PLAN.md)
 # (Editable anytime in your human editor; protected by hook against AI overwrites)
 
@@ -818,9 +831,33 @@ S_EOF
 
     hooks)
         ACT="add"; [ "${1:-}" = "--remove" ] && ACT="remove"
-        merge_json_hooks "${HOME}/.claude/settings.json" "$ACT" || true
-        merge_json_hooks "${HOME}/.qoder/settings.json" "$ACT" || true
-        merge_json_hooks "${HOME}/.zcode/settings.json" "$ACT" || true
+        if [ "${1:-}" = "--local" ]; then
+            need_root
+            merge_json_hooks "$ROOT/.claude/settings.local.json" "add" || true
+            merge_json_hooks "$ROOT/.qoder/settings.json" "add" || true
+        else
+            merge_json_hooks "${HOME}/.claude/settings.json" "$ACT" || true
+            merge_json_hooks "${HOME}/.qoder/settings.json" "$ACT" || true
+            merge_json_hooks "${HOME}/.zcode/settings.json" "$ACT" || true
+        fi
+        ;;
+
+    update)
+        if [ -d "$HUB_DIR/.git" ]; then
+            echo "==> [$NAME] Pulling latest from GitHub ($HUB_DIR)..."
+            git -C "$HUB_DIR" pull --ff-only || echo "WARN: git pull skipped (local edits or offline)."
+        fi
+        if [ -f "$HUB_DIR/install.sh" ]; then
+            MODE_FLAG="--manual"
+            [ "$(cat "$HUB_DIR/auto_init.conf" 2>/dev/null || echo false)" = "true" ] && MODE_FLAG="--auto"
+            bash "$HUB_DIR/install.sh" "$MODE_FLAG" >/dev/null
+            echo "==> [$NAME] Updated global CLI & hook engine."
+        fi
+        if [ -n "$ROOT" ] && [ -d "$ROOT/$SDIR/hooks" ]; then
+            cp "$HUB_DIR/hooks/on_event.sh" "$ROOT/$SDIR/hooks/on_event.sh"
+            chmod +x "$ROOT/$SDIR/hooks/on_event.sh"
+            echo "==> [$NAME] Updated repo hook: $ROOT/$SDIR/hooks/on_event.sh"
+        fi
         ;;
 
     index-sync)
@@ -865,23 +902,36 @@ sed "s|@@HUB@@|${HUB_DIR}|g; s|@@BIN@@|${BIN_DIR}|g; s|@@VERSION@@|${CRUX_VERSIO
 rm -f "${BIN_DIR}/@@NAME@@"
 chmod +x "${BIN_DIR}/${CLI_NAME}"
 
-# Register hooks non-destructively across Claude, Qoder, and ZCode if jq is available
-if command -v jq >/dev/null 2>&1; then
-    "${BIN_DIR}/${CLI_NAME}" hooks >/dev/null 2>&1 || true
-fi
-
-for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
-    if [ -f "$rc" ] && ! grep -qF "${BIN_DIR}" "$rc" 2>/dev/null; then
-        printf '\nexport PATH="%s:${PATH}"\n' "${BIN_DIR}" >> "$rc"
+if [ "${LOCAL_ONLY}" = "true" ]; then
+    # Isolated Single-Repo Test Mode: zero global changes in ~/
+    "${BIN_DIR}/${CLI_NAME}" init
+    if command -v jq >/dev/null 2>&1; then
+        "${BIN_DIR}/${CLI_NAME}" hooks --local >/dev/null 2>&1 || true
     fi
-done
-
-echo "=============================================================================="
-echo " ${CLI_NAME} v${CRUX_VERSION} Installed (100% Inside .crux/ — Zero Root Clutter)"
-echo "   Global Soul Synced: ~/.zcode/AGENTS.md, ~/.qoder/AGENTS.md, ~/.claude/CLAUDE.md, ~/.gemini/GEMINI.md"
-echo "   Hooks Registered:   Claude Code, Qoder, ZCode (backed up as *.crux-bak)"
-echo "   Daily Commands:     ${CLI_NAME} init | ${CLI_NAME} plan | ${CLI_NAME} exempt [--clear] | ${CLI_NAME} canary"
-echo "=============================================================================="
+    echo "=============================================================================="
+    echo " ${CLI_NAME} v${CRUX_VERSION} Installed in LOCAL TEST MODE (Zero Global Changes!)"
+    echo "   Repo:           $(pwd -P)/.crux/"
+    echo "   Local Hooks:    .claude/settings.local.json & .qoder/settings.json"
+    echo "   Test Command:   ${BIN_DIR}/${CLI_NAME} canary"
+    echo "   Update Later:   ${BIN_DIR}/${CLI_NAME} update"
+    echo "=============================================================================="
+else
+    # Global Install Mode
+    if command -v jq >/dev/null 2>&1; then
+        "${BIN_DIR}/${CLI_NAME}" hooks >/dev/null 2>&1 || true
+    fi
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+        if [ -f "$rc" ] && ! grep -qF "${BIN_DIR}" "$rc" 2>/dev/null; then
+            printf '\nexport PATH="%s:${PATH}"\n' "${BIN_DIR}" >> "$rc"
+        fi
+    done
+    echo "=============================================================================="
+    echo " ${CLI_NAME} v${CRUX_VERSION} Installed (100% Inside .crux/ — Zero Root Clutter)"
+    echo "   Global Soul Synced: ~/.zcode/AGENTS.md, ~/.qoder/AGENTS.md, ~/.claude/CLAUDE.md, ~/.gemini/GEMINI.md"
+    echo "   Hooks Registered:   Claude Code, Qoder, ZCode (backed up as *.crux-bak)"
+    echo "   Daily Commands:     ${CLI_NAME} init | ${CLI_NAME} plan | ${CLI_NAME} update | ${CLI_NAME} canary"
+    echo "=============================================================================="
+fi
 # ------------------------------------------------------------------------------
 # 5. Generate Public GitHub README.md & .gitignore inside ~/.crux-hub
 # ------------------------------------------------------------------------------
