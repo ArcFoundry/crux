@@ -55,7 +55,9 @@ echo "${CRUX_VERSION}" > "${HUB_DIR}/VERSION"
 # ------------------------------------------------------------------------------
 # 1. Interactive or Flagged Mode Selection (Preserves Choice on Upgrades)
 # ------------------------------------------------------------------------------
-if [ -z "${INSTALL_MODE}" ] && [ -f "${HUB_DIR}/auto_init.conf" ]; then
+if [ "${LOCAL_ONLY}" = "true" ] && [ -z "${INSTALL_MODE}" ]; then
+    AUTO_INIT_DEFAULT="false"
+elif [ -z "${INSTALL_MODE}" ] && [ -f "${HUB_DIR}/auto_init.conf" ]; then
     AUTO_INIT_DEFAULT="$(cat "${HUB_DIR}/auto_init.conf" 2>/dev/null || echo "false")"
 elif [ "${INSTALL_MODE}" = "auto" ]; then
     AUTO_INIT_DEFAULT="true"
@@ -127,16 +129,12 @@ sync_global_soul() {
 }
 
 if [ "${LOCAL_ONLY}" = "false" ]; then
-    for gf in \
-        "${HOME}/.zcode/AGENTS.md" \
-        "${HOME}/.qoder/AGENTS.md" \
-        "${HOME}/.claude/CLAUDE.md" \
-        "${HOME}/.gemini/GEMINI.md" \
-        "${HOME}/.config/opencode/AGENTS.md" \
-        "${HOME}/.codex/AGENTS.md"
-    do
-        sync_global_soul "$gf"
-    done
+    { [ -d "${HOME}/.zcode" ]    || command -v zcode >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.zcode/AGENTS.md"
+    { [ -d "${HOME}/.qoder" ]    || command -v qoder >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.qoder/AGENTS.md"
+    { [ -d "${HOME}/.claude" ]   || command -v claude >/dev/null 2>&1; }   && sync_global_soul "${HOME}/.claude/CLAUDE.md"
+    { [ -d "${HOME}/.gemini" ]   || command -v antigravity >/dev/null 2>&1 || command -v gemini >/dev/null 2>&1; } && sync_global_soul "${HOME}/.gemini/GEMINI.md"
+    { [ -d "${HOME}/.config/opencode" ] || command -v opencode >/dev/null 2>&1; } && sync_global_soul "${HOME}/.config/opencode/AGENTS.md"
+    { [ -d "${HOME}/.codex" ]    || command -v codex >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.codex/AGENTS.md"
 fi
 
 # ------------------------------------------------------------------------------
@@ -833,12 +831,19 @@ S_EOF
         ACT="add"; [ "${1:-}" = "--remove" ] && ACT="remove"
         if [ "${1:-}" = "--local" ]; then
             need_root
-            merge_json_hooks "$ROOT/.claude/settings.local.json" "add" || true
-            merge_json_hooks "$ROOT/.qoder/settings.json" "add" || true
+            if [ -d "$ROOT/.claude" ] || [ -d "${HOME}/.claude" ] || have claude; then
+                merge_json_hooks "$ROOT/.claude/settings.local.json" "add" || true
+            fi
+            if [ -d "$ROOT/.qoder" ] || [ -d "${HOME}/.qoder" ] || have qoder; then
+                merge_json_hooks "$ROOT/.qoder/settings.json" "add" || true
+            fi
+            if [ -d "$ROOT/.zcode" ] || [ -d "${HOME}/.zcode" ] || have zcode; then
+                merge_json_hooks "$ROOT/.zcode/settings.json" "add" || true
+            fi
         else
-            merge_json_hooks "${HOME}/.claude/settings.json" "$ACT" || true
-            merge_json_hooks "${HOME}/.qoder/settings.json" "$ACT" || true
-            merge_json_hooks "${HOME}/.zcode/settings.json" "$ACT" || true
+            { [ -d "${HOME}/.claude" ] || have claude; } && merge_json_hooks "${HOME}/.claude/settings.json" "$ACT" || true
+            { [ -d "${HOME}/.qoder" ]  || have qoder; }  && merge_json_hooks "${HOME}/.qoder/settings.json" "$ACT" || true
+            { [ -d "${HOME}/.zcode" ]  || have zcode; }  && merge_json_hooks "${HOME}/.zcode/settings.json" "$ACT" || true
         fi
         ;;
 
@@ -873,8 +878,15 @@ S_EOF
         printf '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":".env.production"},"cwd":"%s"}' "$ROOT" | bash "$SDIR/hooks/on_event.sh" PreToolUse 2>/dev/null || RC=$?
         [ "$RC" -eq 2 ] && echo "  [2/3] PreToolUse (.env shield): OK (Blocked with exit 2)" || die "PreToolUse failed to block .env.production"
         RC=0
+        printf '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":".crux/hooks/on_event.sh"},"cwd":"%s"}' "$ROOT" | bash "$SDIR/hooks/on_event.sh" PreToolUse 2>/dev/null || RC=$?
+        [ "$RC" -eq 2 ] || die "PreToolUse failed to block protected .crux/hooks/ write"
+        RC=0
         printf '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":".crux/PLAN.md"},"cwd":"%s"}' "$ROOT" | bash "$SDIR/hooks/on_event.sh" PreToolUse 2>/dev/null || RC=$?
-        [ "$RC" -eq 2 ] && echo "  [3/3] PreToolUse (.crux/PLAN.md lock): OK (Blocked with exit 2)" || die "PreToolUse failed to block .crux/PLAN.md write"
+        if grep -q 'crux:template' "$ROOT/$SDIR/PLAN.md" 2>/dev/null; then
+            [ "$RC" -eq 0 ] && echo "  [3/3] PreToolUse (Contract Lock): OK (PLAN.md open for 1st-time onboarding; .crux/hooks/ locked exit 2)" || die "PreToolUse unexpectedly blocked starter PLAN.md template"
+        else
+            [ "$RC" -eq 2 ] && echo "  [3/3] PreToolUse (.crux/PLAN.md lock): OK (Blocked with exit 2)" || die "PreToolUse failed to block .crux/PLAN.md write"
+        fi
         echo "==> [$NAME] All Canary Checks PASSED."
         ;;
 
@@ -911,7 +923,7 @@ if [ "${LOCAL_ONLY}" = "true" ]; then
     echo "=============================================================================="
     echo " ${CLI_NAME} v${CRUX_VERSION} Installed in LOCAL TEST MODE (Zero Global Changes!)"
     echo "   Repo:           $(pwd -P)/.crux/"
-    echo "   Local Hooks:    .claude/settings.local.json & .qoder/settings.json"
+    echo "   Local Hooks:    Registered ONLY for detected harnesses (no unused .claude/ created)"
     echo "   Test Command:   ${BIN_DIR}/${CLI_NAME} canary"
     echo "   Update Later:   ${BIN_DIR}/${CLI_NAME} update"
     echo "=============================================================================="
