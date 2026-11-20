@@ -1,0 +1,9 @@
+backups/
+purge-backups/
+hooks/
+exempt.list
+auto_roots.list
+auto_init.conf
+VERSION
+*.bak
+*.crux-bak
