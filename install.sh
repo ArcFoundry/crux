@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# crux v4.1.0 — Zero-Friction, Zero-Daemon Multi-Harness Agentic Layer
+# crux v4.2.0 — Zero-Friction, Zero-Daemon Multi-Harness Agentic Layer
 # 100% Contained Inside `.crux/` (Zero Root File Clutter)
-# Compatible with: Linux (WSL2, Ubuntu, Debian, Arch, Fedora, Alpine), macOS, Git-Bash
+# Compatible with: macOS (bash 3.2+), Linux (WSL2, Ubuntu, Debian, Arch, Fedora, Alpine), Git-Bash
+# Harnesses: Qoder, ZCode, OpenCode (v1 & v2), Claude Code, Antigravity/Gemini, MiniMax Code (mcode), DeepSeek (dsh), Codex
 # Hard deps: bash (3.2+), git, awk, grep, sed, find, cksum, tar
 # Optional deps (auto-detected): jq (exact JSON parsing & hook merge), timeout/gtimeout
-# Footprint: 0 MB background RAM | ~36 KB disk | ~5-12 ms per hook invocation
+# Footprint: 0 MB background RAM | ~40 KB disk | ~5-12 ms per hook invocation
 # ==============================================================================
 unset BASH_ENV
 set -euo pipefail
 
-CRUX_VERSION="4.1.0"
+CRUX_VERSION="4.2.0"
 CLI_NAME="crux"
 STATE_DIR=".crux"
 HUB_DIR="${CRUX_HOME:-${HOME}/.crux-hub}"
@@ -95,15 +96,15 @@ fi
 
 # ------------------------------------------------------------------------------
 # 2. Global Home Layer Sync (~/.zcode/AGENTS.md, ~/.qoder/AGENTS.md, etc.)
-#    Points every harness directly to ./.crux/ so ZERO root files are needed,
+#    Points every detected harness directly to ./.crux/ (zero root clutter),
 #    while preserving 100% of each harness's native subagents & RepoWiki powers.
 # ------------------------------------------------------------------------------
 BUILDER_SOUL='<!-- crux:soul:begin -->
 ## Project Continuity & Contract (.crux/)
 When `.crux/PLAN.md` exists in the current repository or workspace:
-1. Read `.crux/INDEX.md`, `.crux/PLAN.md`, and `.crux/PROJECT_STATE.md` at the start of the session so you know the architecture, native wiki locations (`.qoder/repowiki/`, `.zcode/`), and what previous sessions completed.
+1. Read `.crux/INDEX.md`, `.crux/PLAN.md`, and `.crux/PROJECT_STATE.md` at the start of the session so you know the architecture, native wiki locations (`.qoder/repowiki/`, `.zcode/`, `.minimax/`, `docs/wiki/`), and what previous sessions completed.
 2. Use all of your native capabilities (subagents, internal planning, RepoWiki, and tools) at full strength to implement the active task in `.crux/PLAN.md`, touching only the files relevant to that task.
-3. `.crux/PLAN.md` is read-only to agents; if code reality contradicts `.crux/PLAN.md`, log the conflict in `.crux/PROPOSALS.md` and stop rather than altering `.crux/PLAN.md`.
+3. `.crux/PLAN.md` is read-only to agents (after onboarding); if code reality contradicts `.crux/PLAN.md`, log the conflict in `.crux/PROPOSALS.md` and stop rather than altering `.crux/PLAN.md`.
 4. Run `make agent-verify` (if present in `Makefile`) before claiming task completion.
 <!-- crux:soul:end -->'
 
@@ -132,9 +133,11 @@ if [ "${LOCAL_ONLY}" = "false" ]; then
     { [ -d "${HOME}/.zcode" ]    || command -v zcode >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.zcode/AGENTS.md"
     { [ -d "${HOME}/.qoder" ]    || command -v qoder >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.qoder/AGENTS.md"
     { [ -d "${HOME}/.claude" ]   || command -v claude >/dev/null 2>&1; }   && sync_global_soul "${HOME}/.claude/CLAUDE.md"
-    { [ -d "${HOME}/.gemini" ]   || command -v antigravity >/dev/null 2>&1 || command -v gemini >/dev/null 2>&1; } && sync_global_soul "${HOME}/.gemini/GEMINI.md"
+    { [ -d "${HOME}/.gemini" ]   || command -v antigravity >/dev/null 2>&1 || command -v agy >/dev/null 2>&1 || command -v gemini >/dev/null 2>&1; } && sync_global_soul "${HOME}/.gemini/GEMINI.md"
     { [ -d "${HOME}/.config/opencode" ] || command -v opencode >/dev/null 2>&1; } && sync_global_soul "${HOME}/.config/opencode/AGENTS.md"
     { [ -d "${HOME}/.codex" ]    || command -v codex >/dev/null 2>&1; }    && sync_global_soul "${HOME}/.codex/AGENTS.md"
+    { [ -d "${HOME}/.dsh" ]      || command -v dsh >/dev/null 2>&1; }      && sync_global_soul "${HOME}/.dsh/AGENTS.md"
+    { [ -d "${HOME}/.minimax" ]  || [ -d "${HOME}/.minimax-code" ] || command -v mcode >/dev/null 2>&1; } && sync_global_soul "${HOME}/.minimax/AGENTS.md"
 fi
 
 # ------------------------------------------------------------------------------
@@ -142,7 +145,7 @@ fi
 # ------------------------------------------------------------------------------
 cat <<'HOOK_EOF' > "${HUB_DIR}/hooks/on_event.sh"
 #!/usr/bin/env bash
-# @@NAME@@ Hook Engine v@@VERSION@@ — Zero-Daemon Event Handler
+# @@NAME@@ Hook Engine v@@VERSION@@ — Zero-Daemon Event Handler (Linux + macOS POSIX)
 unset BASH_ENV
 set -u
 set -f
@@ -621,6 +624,8 @@ detect_test_cmd() {
 
 index_sync() {
     mkdir -p "$SDIR/local"
+    local repo_base
+    repo_base="$(basename "$(pwd -P)")"
     {
         echo "# Workspace Lookup Table (.crux/INDEX.md)"
         echo ""
@@ -630,21 +635,30 @@ index_sync() {
         echo "- Agent Escalations & Blockers: \`.crux/PROPOSALS.md\`"
         echo "- Architectural Decisions Ledger: \`.crux/DECISIONS.md\`"
         echo ""
-        echo "## 2. Native Harness Wiki Pointers (Read On Demand — Never Duplicated)"
+        echo "## 2. Intertwined Harness Wikis & Knowledge (Read On Demand — Zero Duplication)"
         found_wiki=0
         while IFS= read -r m; do
             [ -z "$m" ] && continue
-            for w in .qoder/repowiki .zcode docs/wiki; do
+            for w in .qoder/repowiki .zcode .minimax .mcode .opencode/docs docs/wiki .crux/docs; do
                 p="$( [ "$m" = "." ] && echo "$w" || echo "$m/$w" )"
                 if [ -d "$p" ]; then
-                    found_wiki=1
                     cnt="$(find "$p" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
-                    echo "- \`$p/\` ($cnt markdown chapters)"
-                    find "$p" -name '*.md' 2>/dev/null | sort | head -n 12 | while IFS= read -r ch; do echo "  - \`$ch\`"; done
+                    if [ "${cnt:-0}" -gt 0 ]; then
+                        found_wiki=1
+                        echo "- \`$p/\` ($cnt markdown chapters)"
+                        find "$p" -name '*.md' 2>/dev/null | sort | head -n 12 | while IFS= read -r ch; do echo "  - \`$ch\`"; done
+                    fi
                 fi
             done
         done < <(members)
-        [ "$found_wiki" = 0 ] && echo "- (No native .qoder/repowiki or .zcode docs present yet; automatically indexed here when created)"
+        if [ -d "${HOME}/.zcode/cli/memories/projects" ]; then
+            zmem="$(find "${HOME}/.zcode/cli/memories/projects" -maxdepth 2 -type d -name "*${repo_base}*" 2>/dev/null | head -n1 || true)"
+            if [ -n "$zmem" ] && [ -f "$zmem/memory/MEMORY.md" ]; then
+                found_wiki=1
+                echo "- ZCode Project Memory: \`$zmem/memory/MEMORY.md\`"
+            fi
+        fi
+        [ "$found_wiki" = 0 ] && echo "- (No native harness wikis detected yet; .qoder/repowiki, .zcode, .minimax, and docs/wiki are auto-linked here when present)"
     } > "$SDIR/INDEX.md"
 }
 
@@ -671,6 +685,83 @@ merge_json_hooks() {
       | .hooks |= with_entries(select(.value != []))
     ' "$f" > "$tmp" && mv "$tmp" "$f"
     note "==> [$NAME] Hooks ${act}ed in $f (backup: ${f}.crux-bak)"
+}
+
+install_opencode_plugin() {
+    local base_dir="$1" act="${2:-add}" hubhook oc_ver
+    hubhook="${HUB_DIR}/hooks/on_event.sh"
+    if [ "$act" = "remove" ]; then
+        rm -rf "$base_dir/plugins/crux.js" "$base_dir/plugins/crux" 2>/dev/null || true
+        note "==> [$NAME] Removed OpenCode bridge plugin from $base_dir/plugins/"
+        return 0
+    fi
+    oc_ver="$(opencode --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -n1 || echo '1.0')"
+    mkdir -p "$base_dir/plugins"
+    case "$oc_ver" in
+        2.*)
+            rm -f "$base_dir/plugins/crux.js" 2>/dev/null || true
+            mkdir -p "$base_dir/plugins/crux"
+            cat <<OC2_EOF > "$base_dir/plugins/crux/index.js"
+import { spawnSync } from "node:child_process";
+const HOOK = "${hubhook}";
+function runCrux(ev, payload) {
+  const r = spawnSync("bash", [HOOK, ev], { input: JSON.stringify(payload), encoding: "utf8" });
+  if (r.status === 2) throw new Error((r.stderr || "Blocked by crux").trim());
+}
+export default {
+  id: "crux",
+  async setup(ctx) {
+    const cwd = ctx.directory || process.cwd();
+    runCrux("SessionStart", { hook_event_name: "SessionStart", session_id: "opencode", cwd });
+    if (ctx.hook) {
+      await ctx.hook("tool.execute.before", async (input, output) => {
+        runCrux("PreToolUse", { hook_event_name: "PreToolUse", tool_name: input.tool, tool_input: (output && output.args) || input.args || {}, session_id: input.sessionID || "opencode", cwd });
+      });
+      await ctx.hook("tool.execute.after", async (input) => {
+        runCrux("PostToolUse", { hook_event_name: "PostToolUse", tool_name: input.tool, session_id: input.sessionID || "opencode", cwd });
+      });
+      await ctx.hook("event", async ({ event }) => {
+        if (event && event.type === "session.idle") {
+          runCrux("Stop", { hook_event_name: "Stop", session_id: "opencode", cwd });
+        }
+      });
+    }
+  }
+};
+OC2_EOF
+            note "==> [$NAME] Installed OpenCode v2 bridge plugin at $base_dir/plugins/crux/index.js"
+            ;;
+        *)
+            rm -rf "$base_dir/plugins/crux" 2>/dev/null || true
+            cat <<OC1_EOF > "$base_dir/plugins/crux.js"
+import { spawnSync } from "node:child_process";
+const HOOK = "${hubhook}";
+function runCrux(ev, payload) {
+  const r = spawnSync("bash", [HOOK, ev], { input: JSON.stringify(payload), encoding: "utf8" });
+  if (r.status === 2) throw new Error((r.stderr || "Blocked by crux").trim());
+}
+export const CruxPlugin = async ({ directory }) => {
+  const cwd = directory || process.cwd();
+  runCrux("SessionStart", { hook_event_name: "SessionStart", session_id: "opencode", cwd });
+  return {
+    "tool.execute.before": async (input, output) => {
+      runCrux("PreToolUse", { hook_event_name: "PreToolUse", tool_name: input.tool, tool_input: (output && output.args) || input.args || {}, session_id: input.sessionID || "opencode", cwd });
+    },
+    "tool.execute.after": async (input) => {
+      runCrux("PostToolUse", { hook_event_name: "PostToolUse", tool_name: input.tool, session_id: input.sessionID || "opencode", cwd });
+    },
+    event: async ({ event }) => {
+      if (event && event.type === "session.idle") {
+        runCrux("Stop", { hook_event_name: "Stop", session_id: "opencode", cwd });
+      }
+    }
+  };
+};
+export default CruxPlugin;
+OC1_EOF
+            note "==> [$NAME] Installed OpenCode v1 bridge plugin at $base_dir/plugins/crux.js"
+            ;;
+    esac
 }
 
 case "$CMD" in
@@ -791,6 +882,11 @@ S_EOF
         echo "==> [$NAME] Updated 'make agent-verify' -> $NEW_CMD"
         ;;
 
+    verify)
+        need_root
+        printf '{"hook_event_name":"Stop","session_id":"manual-verify","cwd":"%s"}' "$ROOT" | bash "$SDIR/hooks/on_event.sh" Stop
+        ;;
+
     exempt|clear)
         CLEAR=0; [ "$CMD" = "clear" ] && CLEAR=1
         for a in "$@"; do [ "$a" = "--clear" ] || [ "$a" = "--purge" ] && CLEAR=1; done
@@ -838,12 +934,17 @@ S_EOF
                 merge_json_hooks "$ROOT/.qoder/settings.json" "add" || true
             fi
             if [ -d "$ROOT/.zcode" ] || [ -d "${HOME}/.zcode" ] || have zcode; then
-                merge_json_hooks "$ROOT/.zcode/settings.json" "add" || true
+                merge_json_hooks "$ROOT/.zcode/config.json" "add" || true
+            fi
+            if [ -d "$ROOT/.opencode" ] || [ -d "${HOME}/.config/opencode" ] || have opencode; then
+                install_opencode_plugin "$ROOT/.opencode" "add" || true
             fi
         else
             { [ -d "${HOME}/.claude" ] || have claude; } && merge_json_hooks "${HOME}/.claude/settings.json" "$ACT" || true
             { [ -d "${HOME}/.qoder" ]  || have qoder; }  && merge_json_hooks "${HOME}/.qoder/settings.json" "$ACT" || true
-            { [ -d "${HOME}/.zcode" ]  || have zcode; }  && merge_json_hooks "${HOME}/.zcode/settings.json" "$ACT" || true
+            { [ -d "${HOME}/.zcode" ]  || have zcode; }  && merge_json_hooks "${HOME}/.zcode/cli/config.json" "$ACT" || true
+            { [ -d "${HOME}/.gemini" ] || have antigravity || have agy; } && merge_json_hooks "${HOME}/.gemini/config/hooks.json" "$ACT" || true
+            { [ -d "${HOME}/.config/opencode" ] || have opencode; } && install_opencode_plugin "${HOME}/.config/opencode" "$ACT" || true
         fi
         ;;
 
@@ -859,7 +960,7 @@ S_EOF
         if [ -n "$INST" ]; then
             if [ "$LOCAL_UPD" = 1 ]; then
                 bash "$INST" --local >/dev/null
-                echo "==> [$NAME] Updated CLI & local repo hook."
+                echo "==> [$NAME] Updated CLI & local repo hooks/plugins."
             else
                 MODE_FLAG="--manual"
                 [ "$(cat "$HUB_DIR/auto_init.conf" 2>/dev/null || echo false)" = "true" ] && MODE_FLAG="--auto"
@@ -877,9 +978,11 @@ S_EOF
     uninstall)
         merge_json_hooks "${HOME}/.claude/settings.json" "remove" 2>/dev/null || true
         merge_json_hooks "${HOME}/.qoder/settings.json" "remove" 2>/dev/null || true
-        merge_json_hooks "${HOME}/.zcode/settings.json" "remove" 2>/dev/null || true
+        merge_json_hooks "${HOME}/.zcode/cli/config.json" "remove" 2>/dev/null || true
+        merge_json_hooks "${HOME}/.gemini/config/hooks.json" "remove" 2>/dev/null || true
+        install_opencode_plugin "${HOME}/.config/opencode" "remove" 2>/dev/null || true
         rm -f "$BIN_DIR/$NAME"
-        echo "==> [$NAME] Removed CLI binary and global hook entries. (Repo .crux/ folders and $HUB_DIR left intact.)"
+        echo "==> [$NAME] Removed CLI binary and global hook/plugin entries. (Repo .crux/ folders and $HUB_DIR left intact.)"
         ;;
 
     index-sync)
@@ -888,7 +991,7 @@ S_EOF
 
     canary)
         need_root
-        echo "==> [$NAME] Running live 4-event Canary Self-Test on $ROOT..."
+        echo "==> [$NAME] Running live Canary Self-Test on $ROOT..."
         printf '{"hook_event_name":"SessionStart","session_id":"canary","cwd":"%s"}' "$ROOT" | bash "$SDIR/hooks/on_event.sh" SessionStart
         echo "  [1/3] SessionStart: OK"
         RC=0
@@ -919,7 +1022,7 @@ S_EOF
             echo "   Project:  Not initialized here (run '$NAME init')"
         fi
         echo "------------------------------------------------------------------------------"
-        echo "   Commands: $NAME init | $NAME plan | $NAME gate '<cmd>' | $NAME exempt [--clear] | $NAME canary"
+        echo "   Commands: $NAME init | $NAME plan | $NAME gate '<cmd>' | $NAME verify | $NAME update | $NAME canary"
         echo "=============================================================================="
         ;;
 esac
@@ -932,32 +1035,26 @@ rm -f "${BIN_DIR}/@@NAME@@"
 chmod +x "${BIN_DIR}/${CLI_NAME}"
 
 if [ "${LOCAL_ONLY}" = "true" ]; then
-    # Isolated Single-Repo Test Mode: zero global changes in ~/
     "${BIN_DIR}/${CLI_NAME}" init
-    if command -v jq >/dev/null 2>&1; then
-        "${BIN_DIR}/${CLI_NAME}" hooks --local >/dev/null 2>&1 || true
-    fi
+    "${BIN_DIR}/${CLI_NAME}" hooks --local >/dev/null 2>&1 || true
     echo "=============================================================================="
     echo " ${CLI_NAME} v${CRUX_VERSION} Installed in LOCAL TEST MODE (Zero Global Changes!)"
     echo "   Repo:           $(pwd -P)/.crux/"
-    echo "   Local Hooks:    Registered ONLY for detected harnesses (no unused .claude/ created)"
+    echo "   Local Bridges:  Auto-wired ONLY for detected harnesses (Qoder, ZCode, OpenCode, Claude)"
     echo "   Test Command:   ${BIN_DIR}/${CLI_NAME} canary"
-    echo "   Update Later:   ${BIN_DIR}/${CLI_NAME} update"
+    echo "   Update Later:   ${BIN_DIR}/${CLI_NAME} update --local"
     echo "=============================================================================="
 else
-    # Global Install Mode
-    if command -v jq >/dev/null 2>&1; then
-        "${BIN_DIR}/${CLI_NAME}" hooks >/dev/null 2>&1 || true
-    fi
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+    "${BIN_DIR}/${CLI_NAME}" hooks >/dev/null 2>&1 || true
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if [ -f "$rc" ] && ! grep -qF "${BIN_DIR}" "$rc" 2>/dev/null; then
             printf '\nexport PATH="%s:${PATH}"\n' "${BIN_DIR}" >> "$rc"
         fi
     done
     echo "=============================================================================="
-    echo " ${CLI_NAME} v${CRUX_VERSION} Installed (100% Inside .crux/ — Zero Root Clutter)"
-    echo "   Global Soul Synced: ~/.zcode/AGENTS.md, ~/.qoder/AGENTS.md, ~/.claude/CLAUDE.md, ~/.gemini/GEMINI.md"
-    echo "   Hooks Registered:   Claude Code, Qoder, ZCode (backed up as *.crux-bak)"
-    echo "   Daily Commands:     ${CLI_NAME} init | ${CLI_NAME} plan | ${CLI_NAME} update | ${CLI_NAME} canary"
+    echo " ${CLI_NAME} v${CRUX_VERSION} Installed (Linux / WSL2 / macOS — 100% Inside .crux/)"
+    echo "   Global Soul Synced: Detected harnesses (~/.zcode, ~/.qoder, ~/.config/opencode, ~/.dsh, ~/.minimax, ~/.claude, ~/.gemini)"
+    echo "   Bridges Registered: Qoder, ZCode, OpenCode (v1/v2 auto-detected), Antigravity, Claude Code"
+    echo "   Daily Commands:     ${CLI_NAME} init | ${CLI_NAME} plan | ${CLI_NAME} gate | ${CLI_NAME} update | ${CLI_NAME} canary"
     echo "=============================================================================="
 fi
